@@ -1,0 +1,23 @@
+[project]
+name = "podcastdl"
+version = "0.1.0"
+description = "A command-line tool to download podcast episodes from an RSS feed."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Kilian Koeltzsch", email = "me@kilian.io" }]
+dependencies = ["feedparser>=6.0.0", "requests>=2.25.0", "tqdm>=4.60.0"]
+
+[project.urls]
+Homepage = "https://github.com/kiliankoe/podcastdl"
+Repository = "https://github.com/kiliankoe/podcastdl"
+
+[project.scripts]
+podcastdl = "podcastdl:main_cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["podcastdl"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
