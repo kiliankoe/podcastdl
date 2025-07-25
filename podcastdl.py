@@ -5,6 +5,8 @@ import re
 from datetime import datetime
 from tqdm import tqdm
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 def sanitize_filename(filename):
     """Removes invalid characters from a filename."""
@@ -29,12 +31,7 @@ def download_episode(episode_url, output_path, episode_title):
 
         if os.path.exists(full_output_path):
             if total_size > 0 and os.path.getsize(full_output_path) == total_size:
-                print(f"'{filename}' already exists and seems complete. Skipping.")
                 return True, filename, True # Added flag for skipped
-            else:
-                print(f"'{filename}' already exists but might be incomplete or size unknown. Re-downloading.")
-        else:
-            print(f"Downloading: '{filename}'")
 
         with open(full_output_path, 'wb') as file, \
              tqdm(total=total_size, unit='iB', unit_scale=True, desc=safe_episode_title[:40].ljust(40), leave=False) as bar:
@@ -58,7 +55,7 @@ def download_episode(episode_url, output_path, episode_title):
         print(f"An unexpected error occurred while downloading '{episode_title}': {e}")
         return False, None, False
 
-def download_podcast_episodes(feed_url, output_dir="podcast_episodes"):
+def download_podcast_episodes(feed_url, output_dir="podcast_episodes", max_concurrent=3):
     """
     Downloads all episodes from a podcast feed URL, oldest first,
     into the specified output directory.
@@ -103,7 +100,6 @@ def download_podcast_episodes(feed_url, output_dir="podcast_episodes"):
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-        print(f"Created output directory: {output_dir}")
 
     total_episodes = len(sorted_episodes)
     print(f"Found {total_episodes} episodes for '{parsed_feed.feed.get('title', 'Unknown Podcast')}'. Starting download (oldest first)...")
@@ -111,8 +107,13 @@ def download_podcast_episodes(feed_url, output_dir="podcast_episodes"):
     newly_downloaded_count = 0
     already_existed_count = 0
     failed_count = 0
-
-    for i, episode_data in enumerate(sorted_episodes):
+    
+    # Thread-safe counters
+    counter_lock = threading.Lock()
+    
+    def process_episode(episode_info):
+        i, episode_data = episode_info
+        nonlocal newly_downloaded_count, already_existed_count, failed_count
         entry = episode_data['entry']
         episode_title = entry.get("title", f"Untitled Episode {i+1}")
 
@@ -120,7 +121,6 @@ def download_podcast_episodes(feed_url, output_dir="podcast_episodes"):
         date_str = episode_data['date'].strftime('%Y-%m-%d') if episode_data['date'] != datetime.min else "nodate"
         prefixed_episode_title = f"{date_str} - {episode_title}"
 
-        print(f"\nProcessing episode {i+1}/{total_episodes}: '{episode_title}' (Published: {date_str})")
 
         enclosures = entry.get("enclosures", [])
         if not enclosures:
@@ -128,9 +128,9 @@ def download_podcast_episodes(feed_url, output_dir="podcast_episodes"):
             if 'link' in entry and entry.link.endswith(('.mp3', '.m4a', '.ogg', '.wav', '.aac')): # Basic check
                 episode_url = entry.link
             else:
-                print(f"No download link (enclosure or suitable link) found for '{episode_title}'. Skipping.")
-                failed_count += 1 # Or a specific "skipped_no_link" counter
-                continue
+                with counter_lock:
+                    failed_count += 1
+                return
         else:
             episode_url = None
             for enclosure in enclosures:
@@ -141,20 +141,40 @@ def download_podcast_episodes(feed_url, output_dir="podcast_episodes"):
                 episode_url = enclosures[0].get("href") # Fallback to first enclosure
 
         if not episode_url:
-            print(f"Could not determine download URL for '{episode_title}'. Skipping.")
-            failed_count +=1
-            continue
+            with counter_lock:
+                failed_count += 1
+            return
 
         success, downloaded_filename, skipped_due_to_existence = download_episode(episode_url, output_dir, prefixed_episode_title)
 
-        if success:
-            if skipped_due_to_existence:
-                already_existed_count += 1
+        with counter_lock:
+            if success:
+                if skipped_due_to_existence:
+                    already_existed_count += 1
+                else:
+                    newly_downloaded_count += 1
             else:
-                newly_downloaded_count += 1
-        else:
-            failed_count += 1
-            print(f"Failed to download '{prefixed_episode_title}'.")
+                failed_count += 1
+    
+    # Process episodes with ThreadPoolExecutor
+    episode_list = list(enumerate(sorted_episodes))
+    
+    if max_concurrent == 1:
+        # Sequential processing (original behavior)
+        for episode_info in episode_list:
+            process_episode(episode_info)
+    else:
+        # Parallel processing
+        with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+            futures = [executor.submit(process_episode, episode_info) for episode_info in episode_list]
+            
+            # Wait for all downloads to complete
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    with counter_lock:
+                        failed_count += 1
 
 
     print("\n--- Download Summary ---")
@@ -173,10 +193,16 @@ def main():
     parser.add_argument("feed_url", help="The URL of the podcast RSS feed.")
     parser.add_argument("-o", "--output", dest="output_dir", default="podcast_episodes",
                         help="The directory to save episodes (default: ./podcast_episodes or ./podcast_episodes/PodcastTitle).")
+    parser.add_argument("-c", "--concurrent", dest="max_concurrent", type=int, default=3,
+                        help="Maximum number of concurrent downloads (default: 3, use 1 for sequential).")
 
     args = parser.parse_args()
 
-    download_podcast_episodes(args.feed_url, args.output_dir)
+    if args.max_concurrent < 1:
+        print("Error: --concurrent must be at least 1")
+        return 1
+
+    download_podcast_episodes(args.feed_url, args.output_dir, args.max_concurrent)
 
 if __name__ == "__main__":
     main()
