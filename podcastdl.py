@@ -12,6 +12,110 @@ def sanitize_filename(filename):
     """Removes invalid characters from a filename."""
     return re.sub(r'[\\/*?:"<>|]', "", filename)
 
+def save_episode_metadata(episode_entry, output_path, episode_title, publish_date):
+    """Saves episode metadata to a txt file alongside the episode."""
+    try:
+        safe_episode_title = sanitize_filename(episode_title)
+        metadata_filename = f"{safe_episode_title}.txt"
+        metadata_path = os.path.join(output_path, metadata_filename)
+        
+        # Skip if metadata file already exists
+        if os.path.exists(metadata_path):
+            return True
+        
+        # Extract available metadata
+        metadata_lines = []
+        metadata_lines.append(f"Title: {episode_entry.get('title', 'N/A')}")
+        metadata_lines.append(f"Published: {publish_date.strftime('%Y-%m-%d %H:%M:%S') if publish_date != datetime.min else 'Unknown'}")
+        
+        # Short Description/Summary
+        short_description = None
+        if hasattr(episode_entry, 'description') and episode_entry.description:
+            short_description = episode_entry.description
+        elif hasattr(episode_entry, 'summary') and episode_entry.summary:
+            short_description = episode_entry.summary
+        
+        if short_description:
+            # Clean up HTML tags if present
+            import html
+            short_description = html.unescape(short_description)
+            short_description = re.sub(r'<[^>]+>', '', short_description)  # Remove HTML tags
+            short_description = re.sub(r'\s+', ' ', short_description).strip()  # Normalize whitespace
+            metadata_lines.append(f"Description: {short_description}")
+        
+        # Store extended content for later (will be added at the end)
+        extended_content = None
+        if hasattr(episode_entry, 'content') and episode_entry.content:
+            if isinstance(episode_entry.content, list) and len(episode_entry.content) > 0:
+                extended_content = episode_entry.content[0].get('value', '')
+            else:
+                extended_content = str(episode_entry.content)
+        
+        # Author
+        author = episode_entry.get('author', episode_entry.get('itunes_author', 'N/A'))
+        if author:
+            metadata_lines.append(f"Author: {author}")
+        
+        # Duration
+        duration = episode_entry.get('itunes_duration', episode_entry.get('duration', 'N/A'))
+        if duration:
+            metadata_lines.append(f"Duration: {duration}")
+        
+        # Episode link/URL
+        if hasattr(episode_entry, 'link') and episode_entry.link:
+            metadata_lines.append(f"Episode URL: {episode_entry.link}")
+        
+        # iTunes episode number and season if available
+        if hasattr(episode_entry, 'itunes_episode') and episode_entry.itunes_episode:
+            metadata_lines.append(f"Episode Number: {episode_entry.itunes_episode}")
+        if hasattr(episode_entry, 'itunes_season') and episode_entry.itunes_season:
+            metadata_lines.append(f"Season: {episode_entry.itunes_season}")
+        
+        # Categories/Tags
+        if hasattr(episode_entry, 'tags') and episode_entry.tags:
+            tags = [tag.get('term', '') for tag in episode_entry.tags if tag.get('term')]
+            if tags:
+                metadata_lines.append(f"Tags: {', '.join(tags)}")
+        
+        # Extended Shownotes from content:encoded (add at the end)
+        if extended_content:
+            # Convert HTML to more readable text while preserving some structure
+            import html
+            extended_content = html.unescape(extended_content)
+            
+            # Convert common HTML elements to readable text
+            extended_content = re.sub(r'<h([1-6]).*?>(.*?)</h[1-6]>', r'\n\n=== \2 ===\n', extended_content)  # Headers
+            extended_content = re.sub(r'<li.*?>(.*?)</li>', r'  • \1\n', extended_content)  # List items
+            extended_content = re.sub(r'<ul.*?>', '\n', extended_content)  # Start unordered list
+            extended_content = re.sub(r'</ul>', '\n', extended_content)  # End unordered list
+            extended_content = re.sub(r'<ol.*?>', '\n', extended_content)  # Start ordered list
+            extended_content = re.sub(r'</ol>', '\n', extended_content)  # End ordered list
+            extended_content = re.sub(r'<p.*?>', '\n', extended_content)  # Paragraphs
+            extended_content = re.sub(r'</p>', '\n', extended_content)
+            extended_content = re.sub(r'<br\s*/?>', '\n', extended_content)  # Line breaks
+            extended_content = re.sub(r'<a.*?href=["\']([^"\']*)["\'].*?>(.*?)</a>', r'\2 (\1)', extended_content)  # Links
+            
+            # Remove remaining HTML tags
+            extended_content = re.sub(r'<[^>]+>', '', extended_content)
+            
+            # Clean up whitespace
+            extended_content = re.sub(r'\n\s*\n\s*\n+', '\n\n', extended_content)  # Multiple newlines
+            extended_content = re.sub(r'^\s+|\s+$', '', extended_content, flags=re.MULTILINE)  # Trim lines
+            extended_content = extended_content.strip()
+            
+            if extended_content and extended_content != short_description:
+                metadata_lines.append(f"\nExtended Shownotes:\n{extended_content}")
+        
+        # Write metadata file
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(metadata_lines))
+            f.write('\n')
+        
+        return True
+    except Exception as e:
+        # Silently fail for metadata - don't let it break episode downloads
+        return False
+
 def download_episode(episode_url, output_path, episode_title):
     """Downloads a single episode with a progress bar."""
     try:
@@ -146,6 +250,10 @@ def download_podcast_episodes(feed_url, output_dir="podcast_episodes", max_concu
             return
 
         success, downloaded_filename, skipped_due_to_existence = download_episode(episode_url, output_dir, prefixed_episode_title)
+        
+        # Save metadata alongside the episode (whether new download or existing)
+        if success:
+            save_episode_metadata(entry, output_dir, prefixed_episode_title, episode_data['date'])
 
         with counter_lock:
             if success:
