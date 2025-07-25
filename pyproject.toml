@@ -13,7 +13,7 @@ Homepage = "https://github.com/kiliankoe/podcastdl"
 Repository = "https://github.com/kiliankoe/podcastdl"
 
 [project.scripts]
-podcastdl = "podcastdl:main_cli"
+podcastdl = "podcastdl:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["podcastdl"]

@@ -167,7 +167,8 @@ def download_podcast_episodes(feed_url, output_dir="podcast_episodes"):
     print("------------------------")
 
 
-if __name__ == "__main__":
+def main():
+    """Main entry point for the podcastdl CLI."""
     parser = argparse.ArgumentParser(description="Download podcast episodes from a feed URL, oldest first.")
     parser.add_argument("feed_url", help="The URL of the podcast RSS feed.")
     parser.add_argument("-o", "--output", dest="output_dir", default="podcast_episodes",
@@ -176,3 +177,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     download_podcast_episodes(args.feed_url, args.output_dir)
+
+if __name__ == "__main__":
+    main()
